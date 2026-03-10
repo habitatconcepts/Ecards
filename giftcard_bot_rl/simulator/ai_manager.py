@@ -1,44 +1,55 @@
 import random
+from collections import deque
+
+MEMORY_WINDOW = 10  # rolling window size
+
 
 class AIManager:
     """Reinforcement-style adaptive parameter tuner."""
 
     def __init__(self, param_ref):
         self.param_ref = param_ref
-        self.memory = {s: {"recent_roi": [], "recent_profit": []} for s in param_ref.keys()}
+        # deque(maxlen) automatically evicts the oldest entry — O(1) vs list.pop(0) O(n)
+        self.memory = {
+            s: {
+                "recent_roi":    deque(maxlen=MEMORY_WINDOW),
+                "recent_profit": deque(maxlen=MEMORY_WINDOW),
+            }
+            for s in param_ref
+        }
 
     def observe(self, summaries):
-        """Receive new summary DataFrame and record rolling averages."""
-        for _, row in summaries.iterrows():
-            s = row["strategy"]
-            self.memory[s]["recent_roi"].append(row["roi"])
-            self.memory[s]["recent_profit"].append(row["profit"])
-            if len(self.memory[s]["recent_roi"]) > 10:
-                self.memory[s]["recent_roi"].pop(0)
-                self.memory[s]["recent_profit"].pop(0)
+        """Record latest per-strategy averages from the summary DataFrame."""
+        # itertuples is ~10x faster than iterrows for row-wise access
+        for row in summaries.itertuples(index=False):
+            mem = self.memory.get(row.strategy)
+            if mem is not None:
+                mem["recent_roi"].append(row.roi)
+                mem["recent_profit"].append(row.profit)
 
     def reward(self, strategy):
-        """Weighted average of ROI mean and profit growth as a simple reward estimate."""
+        """Weighted reward: 70% avg ROI + 30% avg profit."""
         roi_vals = self.memory[strategy]["recent_roi"]
-        profits = self.memory[strategy]["recent_profit"]
+        profits  = self.memory[strategy]["recent_profit"]
         if not roi_vals:
-            return 0
-        return 0.7 * (sum(roi_vals) / len(roi_vals)) + 0.3 * (sum(profits) / len(profits))
+            return 0.0
+        n = len(roi_vals)
+        return 0.7 * (sum(roi_vals) / n) + 0.3 * (sum(profits) / n)
 
     def adjust_params(self):
-        """Core adaptation step — nudges volatility or ROI range based on reward trends."""
-        for s in self.param_ref.keys():
-            r = self.reward(s)
-            conf = self.param_ref[s]
+        """Nudge volatility, speed, and ROI range based on rolling reward."""
+        for s, conf in self.param_ref.items():
+            r     = self.reward(s)
             drift = random.uniform(-0.05, 0.05)
-            # If reward poor, increase volatility to explore / decrease speed
             if r < 15:
-                conf["volatility"] = max(0.1, conf["volatility"] + 0.1)
-                conf["speed"] = max(0.5, conf["speed"] - 0.2)
+                # Reward is poor — increase exploration, slow down
+                conf["volatility"] = min(2.0, conf["volatility"] + 0.1)
+                conf["speed"]      = max(0.5, conf["speed"]      - 0.2)
             elif r > 25:
+                # Reward is good — exploit more, speed up
                 conf["volatility"] = max(0.1, conf["volatility"] - 0.05)
-                conf["speed"] = min(3.0, conf["speed"] + 0.1)
-            # Adjust ROI target range slowly
+                conf["speed"]      = min(3.0, conf["speed"]      + 0.1)
+            # Drift ROI targets slowly
             low, high = conf["roi_target"]
             delta = drift * 5
             conf["roi_target"] = (max(5, low + delta), min(80, high + delta))
