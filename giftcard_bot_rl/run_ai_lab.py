@@ -132,6 +132,9 @@ def launch_async():
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ Configuration")
+    demo_mode = st.toggle("🧪 Demo Mode (mock data)", value=False,
+                          help="Instantly fills the simulation with fake trade data "
+                               "so you can preview the UI without starting the live engine.")
     refresh_rate = st.slider("Refresh interval (s)", 0.5, 5.0, 1.5, 0.5)
     chart_window = st.slider("Chart history (deals)", 50, 300, 150, 25)
     st.markdown("---")
@@ -194,9 +197,31 @@ if ctrl3.button("🔄 Reset", use_container_width=True):
     st.session_state.clear()
     st.rerun()
 
+# ── Mock data injection (Demo Mode) ──────────────────────────────────────────
+if demo_mode and state.df.empty:
+    import random as _rng
+    from datetime import datetime as _dt
+    _mock = []
+    _deal_counters = {s: 0 for s in STRATEGIES}
+    for _ in range(120):
+        s = _rng.choice(STRATEGIES)
+        _deal_counters[s] += 1
+        p     = DEFAULT_PARAMS[s]
+        roi   = max(0.0, min(_rng.gauss(_rng.uniform(*p["roi_target"]), 10 * p["volatility"]), 80.0))
+        fv    = _rng.choice([50, 100, 150, 200])
+        _mock.append({
+            "timestamp": _dt.now().strftime("%H:%M:%S"),
+            "strategy":  s,
+            "deal_id":   _deal_counters[s],
+            "roi":       round(roi, 2),
+            "profit":    round(fv * roi / 100, 2),
+        })
+    state.update(_mock)
+    state._flush()
+
 # ── Consume new data ──────────────────────────────────────────────────────────
 if state.running:
-    new = asyncio.run(queue.consume())
+    new = queue.consume()   # synchronous — thread-safe stdlib queue.Queue
     state.update(new)
 
 summaries = state.summary()
@@ -339,7 +364,7 @@ with tab_params:
                 }
                 for s in STRATEGIES
             ]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
@@ -366,11 +391,11 @@ with tab_feed:
             .rename(columns={"timestamp": "Time", "strategy": "Strategy",
                               "roi": "ROI (%)", "profit": "Profit ($)"})
             .style
-            .applymap(colour_roi, subset=["ROI (%)"])
+            .map(colour_roi, subset=["ROI (%)"])
             .format({"ROI (%)": "{:.1f}", "Profit ($)": "${:.2f}"})
         )
         st.markdown("#### 📋 Most Recent Trades")
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, width="stretch", hide_index=True)
     else:
         st.markdown(
             "<div style='text-align:center;padding:60px;color:#8b949e;font-size:1.1rem'>"

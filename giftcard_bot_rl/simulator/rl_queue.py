@@ -1,33 +1,41 @@
 import asyncio
-from asyncio import Queue, QueueEmpty
+import queue
+import threading
 
 
 class RLQueue:
+    """
+    Thread-safe queue bridge between async producer coroutines
+    (running on a background thread's event loop) and the synchronous
+    Streamlit main thread.
+
+    Uses stdlib queue.Queue which is protected by a mutex and safe to
+    put/get across threads — unlike asyncio.Queue which is NOT thread-safe.
+    """
+
     def __init__(self):
-        self.queue   = Queue()
+        self.queue   = queue.Queue()   # thread-safe stdlib queue
         self.running = False
         self.tasks: list = []
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def launch(self, strategies, param_ref, producer):
-        """Spawn one producer task per strategy. No-op if already running."""
+        """Spawn one producer coroutine per strategy."""
         if self.running:
             return
         self.running = True
+        self._loop = asyncio.get_event_loop()
         for s in strategies:
             task = asyncio.create_task(producer(s, self.queue, param_ref))
             self.tasks.append(task)
 
-    async def consume(self) -> list:
-        """Drain all currently available items without blocking.
-
-        Uses get_nowait() to avoid async overhead from awaiting get() in a
-        loop that already confirms the queue is non-empty.
-        """
+    def consume(self) -> list:
+        """Synchronously drain all available items — safe to call from any thread."""
         items = []
         while True:
             try:
                 items.append(self.queue.get_nowait())
-            except QueueEmpty:
+            except queue.Empty:
                 break
         return items
 
